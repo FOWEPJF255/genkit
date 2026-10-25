@@ -106,9 +106,23 @@ export async function startCLI(): Promise<void> {
         commandName = 'unknown';
       }
 
+      // MCP reserves stdin/stdout for its protocol, including during startup.
+      if (
+        commandName !== 'mcp' &&
+        !process.argv.includes('--no-update-notification')
+      ) {
+        try {
+          await showUpdateNotification();
+        } catch (e) {
+          logger.debug('Failed to show update notification', e);
+          // Update notifications should not break the CLI.
+        }
+      }
+
       if (
         !process.argv.includes('--non-interactive') &&
-        commandName !== 'config'
+        commandName !== 'config' &&
+        commandName !== 'mcp'
       ) {
         await notifyAnalyticsIfFirstRun();
       }
@@ -124,21 +138,6 @@ export async function startCLI(): Promise<void> {
         )
       );
     });
-
-  // Check for updates and show notification if available,
-  // unless --no-update-notification is set
-  // Run this synchronously to ensure it shows before command execution
-  const hasNoUpdateNotification = process.argv.includes(
-    '--no-update-notification'
-  );
-  if (!hasNoUpdateNotification) {
-    try {
-      await showUpdateNotification();
-    } catch (e) {
-      logger.debug('Failed to show update notification', e);
-      // Silently ignore errors - update notifications shouldn't break the CLI
-    }
-  }
 
   // When running as a spawned UI server process, argv[1] will be '__server-harness'
   // instead of a normal command. This allows the same binary to serve both CLI and server roles.
