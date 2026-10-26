@@ -102,7 +102,7 @@ function toGenerateResponse(
         : outputFormat === 'webp'
           ? 'image/webp'
           : 'image/png';
-    const content = (result.data ?? []).map((image) => ({
+    const content = images.map((image) => ({
       media: {
         contentType,
         url: image.url || `data:${contentType};base64,${image.b64_json}`,
