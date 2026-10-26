@@ -218,18 +218,53 @@ it('type-checks a strict consumer of the published GPT image references', () => 
     ts.sys,
     path.dirname(configPath)
   );
-  const program = ts.createProgram(
-    [path.join(__dirname, 'fixtures/openai-image-types.ts')],
-    {
-      ...parsed.options,
-      noEmit: true,
-      skipLibCheck: true,
-    }
-  );
+  const fixture = path.join(__dirname, 'fixtures/openai-image-types.ts');
+  const program = ts.createProgram([fixture], {
+    ...parsed.options,
+    noEmit: true,
+    skipLibCheck: true,
+  });
   const diagnostics = ts.getPreEmitDiagnostics(program);
   expect(
     diagnostics.map((diagnostic) =>
       ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
     )
   ).toEqual([]);
+  const service = ts.createLanguageService({
+    getCompilationSettings: () => parsed.options,
+    getScriptFileNames: () => [fixture],
+    getScriptVersion: () => '0',
+    getScriptSnapshot: (filename) => {
+      const text = ts.sys.readFile(filename);
+      return text === undefined
+        ? undefined
+        : ts.ScriptSnapshot.fromString(text);
+    },
+    getCurrentDirectory: () => path.dirname(configPath),
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+    realpath: ts.sys.realpath,
+  });
+  try {
+    const source = ts.sys.readFile(fixture)!;
+    const completions = service.getCompletionsAtPosition(
+      fixture,
+      source.lastIndexOf("''") + 1,
+      {}
+    );
+    expect(completions?.entries.map((entry) => entry.name)).toEqual(
+      expect.arrayContaining([
+        'gpt-image-1',
+        'gpt-image-2',
+        'gpt-image-2.5-sunburst',
+        'gpt-image-2.5-flare',
+      ])
+    );
+  } finally {
+    service.dispose();
+  }
 });

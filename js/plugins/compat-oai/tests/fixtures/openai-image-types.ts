@@ -51,4 +51,6 @@ export function checkImageReferences() {
   // @ts-expect-error GPT images always return base64; response_format is unsupported.
   model.withConfig({ response_format: 'b64_json', n: 1 });
   openAI.model('dall-e-3').withConfig({ quality: 'hd', style: 'vivid', n: 1 });
+  // Editor completion cursor; this compile-only function is never invoked.
+  openAI.model('');
 }

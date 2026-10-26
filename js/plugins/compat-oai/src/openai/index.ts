@@ -269,7 +269,10 @@ export type OpenAIPlugin = {
   (params?: OpenAIPluginOptions): GenkitPluginV2;
   /** References a GPT image model with its image-generation configuration. */
   model(
-    name: (`gpt-image-${string}` & {}) | (`chatgpt-image-${string}` & {}),
+    name:
+      | Extract<keyof typeof SUPPORTED_IMAGE_MODELS, `gpt-image-${string}`>
+      | (`gpt-image-${string}` & {})
+      | (`chatgpt-image-${string}` & {}),
     config?: z.infer<typeof GPTImageConfigSchema>
   ): ModelReference<typeof GPTImageConfigSchema>;
   model(
