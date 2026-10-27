@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-import {
-  ROOT_CONTEXT,
-  TraceFlags,
-  context,
-  trace,
-  type Context,
-} from '@opentelemetry/api';
+import { ROOT_CONTEXT, TraceFlags, context, trace } from '@opentelemetry/api';
 import * as assert from 'assert';
-import { afterEach, beforeEach, describe, it } from 'node:test';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  it,
+  mock as testMock,
+} from 'node:test';
 import { AgentError, remoteAgent } from '../src/client/agent';
 // Custom-transport tests import from the public entry point on purpose, to
 // verify everything needed is exported from `genkit/beta/client`.
@@ -662,20 +662,9 @@ describe('remoteAgent', () => {
       spanId: '0123456789abcdef',
       traceFlags: TraceFlags.SAMPLED,
     };
-    let active = trace.setSpanContext(context.active(), spanContext);
-    const manager = {
-      active: () => active,
-      with: <T>(_context: Context, fn: (...args: unknown[]) => T) => fn(),
-      bind: <T>(_: Context, target: T) => target,
-      enable() {
-        return this;
-      },
-      disable() {
-        return this;
-      },
-    };
-    context.disable();
-    context.setGlobalContextManager(manager);
+    const originalActive = context.active();
+    let active = trace.setSpanContext(originalActive, spanContext);
+    const activeMock = testMock.method(context, 'active', () => active);
     try {
       const agent = remoteAgentTransport({ url: '/api/a' });
       mock.onNext(() => sseResponse([turnEndResult({ finishReason: 'stop' })]));
@@ -726,7 +715,8 @@ describe('remoteAgent', () => {
       await agent.getSnapshot({ snapshotId: 'snap-1' });
       assert.equal(mock.requests[6].headers.traceparent, undefined);
     } finally {
-      context.disable();
+      activeMock.mock.restore();
+      assert.strictEqual(context.active(), originalActive);
     }
   });
 });
