@@ -15,6 +15,9 @@
  */
 
 import { describe, expect, it } from '@jest/globals';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { ProcessManager } from '../src/manager/process-manager';
 
 describe('ProcessManager', () => {
@@ -78,4 +81,50 @@ describe('ProcessManager', () => {
     await manager.kill();
     expect(manager.status()).toEqual({ status: 'stopped' });
   });
+
+  it('kills a child process and its grandchild', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'genkit-process-tree-'));
+    const script = path.join(dir, 'child.cjs');
+    const pidsFile = path.join(dir, 'pids.json');
+    fs.writeFileSync(
+      script,
+      `const { spawn } = require('child_process');
+       const fs = require('fs');
+       const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+       fs.writeFileSync(process.argv[2], JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
+       setInterval(() => {}, 1000);`
+    );
+    const manager = new ProcessManager('node', [script, pidsFile]);
+    let pids: { child: number; grandchild: number } | undefined;
+    const startPromise = manager.start({ nonInteractive: true });
+    try {
+      for (let i = 0; i < 100 && !fs.existsSync(pidsFile); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(fs.existsSync(pidsFile)).toBe(true);
+      pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
+      await manager.kill();
+      await startPromise;
+      for (let i = 0; i < 100 && isAlive(pids!.grandchild); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(isAlive(pids!.child)).toBe(false);
+      expect(isAlive(pids!.grandchild)).toBe(false);
+    } finally {
+      await manager.kill();
+      for (const pid of [pids?.child, pids?.grandchild]) {
+        if (pid && isAlive(pid)) process.kill(pid, 'SIGTERM');
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -47,6 +47,7 @@ describe('Tools Server', () => {
       listRuntimes: jest.fn(),
       onRuntimeEvent: jest.fn(),
       cancelAction: jest.fn(),
+      stopOnce: jest.fn(async () => {}),
     };
     serverPromise = startServer(mockManager as BaseRuntimeManager, port);
   });
@@ -63,6 +64,9 @@ describe('Tools Server', () => {
       // Ignore
     }
     await serverPromise;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    expect(mockManager.stopOnce).toHaveBeenCalledTimes(1);
     exitSpy.mockRestore();
   });
 
