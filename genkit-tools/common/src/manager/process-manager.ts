@@ -130,7 +130,14 @@ export class ProcessManager {
       const onTerminated = (err: Error | null) => {
         if (err) {
           logger.debug(`Error during process termination: ${err.message}`);
-          if (this.appProcess) {
+          // A child may exit before Node delivers its 'exit' event. Only fail
+          // shutdown if the target PID is still running after the kill error.
+          if (
+            this.appProcess &&
+            this.appProcess.exitCode === null &&
+            this.appProcess.signalCode === null &&
+            isProcessAlive(pid)
+          ) {
             this.stopping = false;
             reject(err);
             return;
@@ -138,18 +145,21 @@ export class ProcessManager {
         }
         resolve();
       };
-      if (process.platform === 'win32') {
-        // terminate relies on wmic.exe, which is absent on current Windows.
-        // taskkill targets only the process tree rooted at our own child PID.
-        execFile(
-          'taskkill.exe',
-          ['/PID', String(pid), '/T', '/F'],
-          onTerminated
-        );
-      } else {
-        terminate(pid, 'SIGTERM', onTerminated);
-      }
+      this.terminateProcess(pid, onTerminated);
     });
+  }
+
+  private terminateProcess(
+    pid: number,
+    callback: (error: Error | null) => void
+  ): void {
+    if (process.platform === 'win32') {
+      // terminate relies on wmic.exe, which is absent on current Windows.
+      // taskkill targets only the process tree rooted at our own child PID.
+      execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], callback);
+    } else {
+      terminate(pid, 'SIGTERM', callback);
+    }
   }
 
   status(): AppProcessStatus {
@@ -165,5 +175,14 @@ export class ProcessManager {
     }
     this.appProcess = undefined;
     this._status = 'stopped';
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }

@@ -355,16 +355,23 @@ export function startServer(
 
   app.post('/api/__quitquitquit', (_, res) => {
     logger.debug('Shutting down tools API');
+    // Do not wait for server.close's callback: a Dev UI stream may remain active.
+    let stopping = false;
+    const stopAfterResponse = () => {
+      if (stopping) return;
+      stopping = true;
+      server.close();
+      void manager.stopOnce().then(
+        () => process.exit(0),
+        (error) => {
+          logger.error(`Failed to stop runtime: ${error}`);
+          process.exit(1);
+        }
+      );
+    };
+    res.once('finish', stopAfterResponse);
+    res.once('close', stopAfterResponse);
     res.status(200).send('Server is shutting down');
-    server.close(async () => {
-      try {
-        await manager.stopOnce();
-        process.exit(0);
-      } catch (error) {
-        logger.error(`Failed to stop runtime: ${error}`);
-        process.exit(1);
-      }
-    });
   });
 
   // Endpoints for CLI control
