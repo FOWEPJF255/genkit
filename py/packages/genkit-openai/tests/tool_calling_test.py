@@ -200,6 +200,41 @@ async def test_string_tool_history_and_stream_use_original_value() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_stream_accepts_tool_call_before_function(sample_request: ModelRequest) -> None:
+    """A tool-call id may arrive before its function metadata and arguments."""
+    first = MagicMock(index=0, id='tool123', function=None)
+    second = MagicMock(index=0, id=None)
+    second.function.name = 'tool_fn'
+    second.function.arguments = '{"a": '
+    third = MagicMock(index=0, id=None)
+    third.function.name = None
+    third.function.arguments = '1}'
+
+    async def stream():
+        for call in (first, second, third):
+            delta = MagicMock(content=None, role=None, tool_calls=[call], reasoning_content=None, refusal=None)
+            yield MagicMock(choices=[MagicMock(delta=delta, finish_reason=None, model_extra={})], usage=None)
+
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=stream())
+    chunks: list[ModelResponseChunk] = []
+    result = await OpenAIModel(model='gpt-4', client=client)._generate_stream(sample_request, chunks.append)
+
+    assert result.message is not None
+    assert len(result.message.content) == 1
+    request = result.message.content[0].tool_request
+    assert request is not None
+    assert request.name == 'tool_fn'
+    assert request.input == {'a': 1}
+    chunk_inputs = []
+    for chunk in chunks:
+        tool_request = chunk.content[0].tool_request
+        assert tool_request is not None
+        chunk_inputs.append(tool_request.input)
+    assert chunk_inputs == ['{"a": ', '1}']
+
+
+@pytest.mark.asyncio
 async def test_generate_stream_with_tool_calls(sample_request: ModelRequest) -> None:
     """Test generate_stream processes tool calls streamed in chunks correctly."""
     mock_client = MagicMock()

@@ -615,10 +615,20 @@ class OpenAIModel:
                         tool_calls[tool_call.index] = tool_call
                     else:
                         existing = tool_calls[tool_call.index]
-                        if hasattr(existing, 'function') and existing.function and tool_call.function:
-                            existing.function.arguments = (existing.function.arguments or '') + fragment
+                        if tool_call.function:
+                            if not existing.function:
+                                existing.function = tool_call.function
+                            else:
+                                if tool_call.function.name and not existing.function.name:
+                                    existing.function.name = tool_call.function.name
+                                existing.function.arguments = (existing.function.arguments or '') + fragment
                     complete_call = tool_calls[tool_call.index]
-                    if not is_string_tool(complete_call.function.name, request.tools):
+                    # The id may arrive before the function name; wait to emit a usable part.
+                    if (
+                        complete_call.function
+                        and complete_call.function.name
+                        and not is_string_tool(complete_call.function.name, request.tools)
+                    ):
                         parts.append(MessageConverter.tool_call_to_genkit(complete_call, args_segment=fragment))
 
             if parts:
