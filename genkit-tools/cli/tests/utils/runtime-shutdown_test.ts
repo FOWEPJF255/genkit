@@ -83,6 +83,22 @@ describe('waitForRuntimeShutdown', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before);
   });
 
+  it('preserves the process failure when runtime cleanup also fails', async () => {
+    const processError = new Error('process failed');
+    const stopOnce = jest.fn(async () => {
+      throw new Error('cleanup failed');
+    });
+    const manager = { stopOnce } as unknown as BaseRuntimeManager;
+    const before = process.listenerCount('SIGTERM');
+
+    await expect(
+      waitForRuntimeShutdown(manager, Promise.reject(processError))
+    ).rejects.toBe(processError);
+
+    expect(stopOnce).toHaveBeenCalledTimes(1);
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+
   it('exits with failure after a signal if runtime cleanup fails', async () => {
     let finishProcess!: () => void;
     const processPromise = new Promise<void>((resolve) => {

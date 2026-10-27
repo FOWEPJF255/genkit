@@ -43,15 +43,23 @@ export async function waitForRuntimeShutdown(
     process.on(signal, handler);
     return { signal, handler };
   });
+  let processFailed = false;
+  let processError: unknown;
   try {
     await processPromise;
+  } catch (error) {
+    processFailed = true;
+    processError = error;
+  }
+  try {
+    await stop();
+  } catch (error) {
+    if (!processFailed) throw error;
+    logger.error(`Failed to stop runtime after process failure: ${error}`);
   } finally {
-    try {
-      await stop();
-    } finally {
-      for (const { signal, handler } of handlers) {
-        process.off(signal, handler);
-      }
+    for (const { signal, handler } of handlers) {
+      process.off(signal, handler);
     }
   }
+  if (processFailed) throw processError;
 }
