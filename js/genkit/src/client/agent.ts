@@ -156,9 +156,8 @@ export function remoteAgentTransport(
         ? await options.headers()
         : options.headers;
     if (
-      Object.keys(headers ?? {}).some(
-        (key) => key.toLowerCase() === 'traceparent'
-      )
+      headers &&
+      Object.keys(headers).some((key) => key.toLowerCase() === 'traceparent')
     ) {
       return headers;
     }

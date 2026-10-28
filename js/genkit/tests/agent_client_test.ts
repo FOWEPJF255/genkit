@@ -16,6 +16,7 @@
 
 import { ROOT_CONTEXT, TraceFlags, context, trace } from '@opentelemetry/api';
 import * as assert from 'assert';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   afterEach,
   beforeEach,
@@ -663,57 +664,72 @@ describe('remoteAgent', () => {
       traceFlags: TraceFlags.SAMPLED,
     };
     const originalActive = context.active();
-    let active = trace.setSpanContext(originalActive, spanContext);
-    const activeMock = testMock.method(context, 'active', () => active);
+    const activeStorage = new AsyncLocalStorage<
+      ReturnType<typeof context.active>
+    >();
+    const activeMock = testMock.method(
+      context,
+      'active',
+      () => activeStorage.getStore() ?? originalActive
+    );
+    const agent = remoteAgentTransport({ url: '/api/a' });
     try {
-      const agent = remoteAgentTransport({ url: '/api/a' });
-      mock.onNext(() => sseResponse([turnEndResult({ finishReason: 'stop' })]));
-      const turn = agent.runTurn(
-        { message: { role: 'user', content: [{ text: 'hi' }] } },
-        {},
-        { abortSignal: new AbortController().signal }
-      );
-      await turn.output;
-      mock.onNext(() => jsonResponse({ result: undefined }));
-      await agent.getSnapshot({ snapshotId: 'snap-1' });
-      mock.onNext(() => jsonResponse({ result: undefined }));
-      await agent.waitForSnapshot?.('snap-1');
-      mock.onNext(() => jsonResponse({ result: { status: 'aborted' } }));
-      await agent.abort('snap-1');
-      assert.deepEqual(
-        mock.requests.map((req) => req.headers.traceparent),
-        Array(4).fill('00-0123456789abcdef0123456789abcdef-0123456789abcdef-01')
-      );
+      await activeStorage.run(
+        trace.setSpanContext(originalActive, spanContext),
+        async () => {
+          mock.onNext(() =>
+            sseResponse([turnEndResult({ finishReason: 'stop' })])
+          );
+          const turn = agent.runTurn(
+            { message: { role: 'user', content: [{ text: 'hi' }] } },
+            {},
+            { abortSignal: new AbortController().signal }
+          );
+          await turn.output;
+          mock.onNext(() => jsonResponse({ result: undefined }));
+          await agent.getSnapshot({ snapshotId: 'snap-1' });
+          mock.onNext(() => jsonResponse({ result: undefined }));
+          await agent.waitForSnapshot?.('snap-1');
+          mock.onNext(() => jsonResponse({ result: { status: 'aborted' } }));
+          await agent.abort('snap-1');
+          assert.deepEqual(
+            mock.requests.map((req) => req.headers.traceparent),
+            Array(4).fill(
+              '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'
+            )
+          );
 
-      const userHeaders = { Authorization: 'Bearer xyz' };
-      const withHeaders = remoteAgentTransport({
-        url: '/api/a',
-        headers: userHeaders,
+          const userHeaders = { Authorization: 'Bearer xyz' };
+          const withHeaders = remoteAgentTransport({
+            url: '/api/a',
+            headers: userHeaders,
+          });
+          mock.onNext(() => jsonResponse({ result: undefined }));
+          await withHeaders.getSnapshot({ snapshotId: 'snap-1' });
+          assert.equal(mock.requests[4].headers.Authorization, 'Bearer xyz');
+          assert.equal(
+            mock.requests[4].headers.traceparent,
+            '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'
+          );
+          assert.deepEqual(userHeaders, { Authorization: 'Bearer xyz' });
+
+          const explicit = { TraceParent: 'caller-value' };
+          const withExplicit = remoteAgentTransport({
+            url: '/api/a',
+            headers: async () => explicit,
+          });
+          mock.onNext(() => jsonResponse({ result: undefined }));
+          await withExplicit.getSnapshot({ snapshotId: 'snap-1' });
+          assert.equal(mock.requests[5].headers.TraceParent, 'caller-value');
+          assert.equal(mock.requests[5].headers.traceparent, undefined);
+          assert.deepEqual(explicit, { TraceParent: 'caller-value' });
+        }
+      );
+      await activeStorage.run(ROOT_CONTEXT, async () => {
+        mock.onNext(() => jsonResponse({ result: undefined }));
+        await agent.getSnapshot({ snapshotId: 'snap-1' });
+        assert.equal(mock.requests[6].headers.traceparent, undefined);
       });
-      mock.onNext(() => jsonResponse({ result: undefined }));
-      await withHeaders.getSnapshot({ snapshotId: 'snap-1' });
-      assert.equal(mock.requests[4].headers.Authorization, 'Bearer xyz');
-      assert.equal(
-        mock.requests[4].headers.traceparent,
-        '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01'
-      );
-      assert.deepEqual(userHeaders, { Authorization: 'Bearer xyz' });
-
-      const explicit = { TraceParent: 'caller-value' };
-      const withExplicit = remoteAgentTransport({
-        url: '/api/a',
-        headers: async () => explicit,
-      });
-      mock.onNext(() => jsonResponse({ result: undefined }));
-      await withExplicit.getSnapshot({ snapshotId: 'snap-1' });
-      assert.equal(mock.requests[5].headers.TraceParent, 'caller-value');
-      assert.equal(mock.requests[5].headers.traceparent, undefined);
-      assert.deepEqual(explicit, { TraceParent: 'caller-value' });
-
-      active = ROOT_CONTEXT;
-      mock.onNext(() => jsonResponse({ result: undefined }));
-      await agent.getSnapshot({ snapshotId: 'snap-1' });
-      assert.equal(mock.requests[6].headers.traceparent, undefined);
     } finally {
       activeMock.mock.restore();
       assert.strictEqual(context.active(), originalActive);
