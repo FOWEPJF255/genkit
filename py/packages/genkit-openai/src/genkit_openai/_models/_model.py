@@ -73,6 +73,7 @@ _JSON_OBJECT_ONLY_MODELS = frozenset({
     'gpt-4-1106-preview',
     'gpt-4o-2024-05-13',
 })
+_LEGACY_JSON_MODELS = _PROMPT_ONLY_JSON_MODELS | _JSON_OBJECT_ONLY_MODELS
 
 
 def _uses_max_completion_tokens(model: str | None) -> bool:
@@ -344,11 +345,7 @@ class OpenAIModel:
         if request.output_format != 'json' or not request.output_schema:
             return False
         # These models cannot receive a strict json_schema response format.
-        return (
-            self._model.startswith('deepseek')
-            or self._model in _JSON_OBJECT_ONLY_MODELS
-            or self._model in _PROMPT_ONLY_JSON_MODELS
-        )
+        return self._model.startswith('deepseek') or self._model in _LEGACY_JSON_MODELS
 
     def _get_response_format(self, request: ModelRequest) -> dict | None:
         """Determines the response format configuration based on the output settings.
@@ -465,11 +462,7 @@ class OpenAIModel:
         if self._needs_schema_in_prompt(request) and request.output_schema:
             schema_msg = self._build_schema_instruction(request.output_schema)
             messages = [schema_msg, *messages]
-        elif (
-            request.output_format == 'json'
-            and not request.output_schema
-            and self._model in (_PROMPT_ONLY_JSON_MODELS | _JSON_OBJECT_ONLY_MODELS)
-        ):
+        elif request.output_format == 'json' and not request.output_schema and self._model in _LEGACY_JSON_MODELS:
             messages = [{'role': 'system', 'content': 'Respond with a JSON object.'}, *messages]
 
         openai_config: dict[str, Any] = {
