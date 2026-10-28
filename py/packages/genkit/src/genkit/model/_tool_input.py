@@ -38,9 +38,12 @@ def wrap_string_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def is_string_tool(name: str, tools: Sequence[ToolDefinition] | None) -> bool:
+def is_string_tool(name: str, tools: Sequence[ToolDefinition | None] | None) -> bool:
     return any(
-        tool.name == name and isinstance(tool.input_schema, dict) and tool.input_schema.get('type') == 'string'
+        tool is not None
+        and tool.name == name
+        and isinstance(tool.input_schema, dict)
+        and tool.input_schema.get('type') == 'string'
         for tool in tools or ()
     )
 
