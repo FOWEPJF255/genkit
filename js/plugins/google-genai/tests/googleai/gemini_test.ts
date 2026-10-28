@@ -29,6 +29,7 @@ import {
   TEST_ONLY,
   defineModel,
   isGeminiModelName,
+  isImageModelName,
   isVideoModelName,
   model,
 } from '../../src/googleai/gemini.js';
@@ -608,7 +609,7 @@ describe('Google AI Gemini', () => {
         });
       });
 
-      it('passes responseModalities to the API (Interactions API)', async () => {
+      it('sends responseModalities as response_format entries (Interactions API)', async () => {
         const model = defineModel('gemini-flash-latest', defaultPluginOptions);
         mockFetchResponse(defaultApiResponse);
         const request: GenerateRequest<typeof GeminiConfigSchema> = {
@@ -622,9 +623,87 @@ describe('Google AI Gemini', () => {
         const apiRequest: CreateInteractionRequest = JSON.parse(
           fetchStub.lastCall.args[1].body
         );
-        assert.deepStrictEqual(apiRequest.response_modalities, [
-          'text',
-          'audio',
+        assert.deepStrictEqual(apiRequest.response_format, [
+          { type: 'text' },
+          { type: 'audio' },
+        ]);
+        // Deprecated by the API: not sent.
+        assert.strictEqual(apiRequest.response_modalities, undefined);
+      });
+
+      it('sends imageConfig on the image entry with text, for image models (Interactions API)', async () => {
+        const model = defineModel(
+          'gemini-nano-banana-2.1',
+          defaultPluginOptions
+        );
+        mockFetchResponse(defaultApiResponse);
+        await model
+          .run({
+            ...minimalRequest,
+            config: { imageConfig: { aspectRatio: '9:16', imageSize: '2K' } },
+          })
+          .catch(() => undefined);
+
+        const apiRequest: CreateInteractionRequest = JSON.parse(
+          fetchStub.lastCall.args[1].body
+        );
+        // The same outputs as before (text and image), with the image
+        // settings in the image entry (seen live to apply, Oct 2026).
+        assert.deepStrictEqual(apiRequest.response_format, [
+          { type: 'text' },
+          { type: 'image', aspect_ratio: '9:16', image_size: '2K' },
+        ]);
+        assert.strictEqual(apiRequest.response_modalities, undefined);
+        assert.ok(!('image_config' in (apiRequest.generation_config ?? {})));
+      });
+
+      it('asks image models for text and image by default (Interactions API)', async () => {
+        const model = defineModel(
+          'gemini-3.1-flash-lite-image',
+          defaultPluginOptions
+        );
+        mockFetchResponse(defaultApiResponse);
+        await model.run(minimalRequest).catch(() => undefined);
+
+        const apiRequest: CreateInteractionRequest = JSON.parse(
+          fetchStub.lastCall.args[1].body
+        );
+        assert.deepStrictEqual(apiRequest.response_format, [
+          { type: 'text' },
+          { type: 'image' },
+        ]);
+      });
+
+      it('keeps JSON output when audioFormat is set too (Interactions API)', async () => {
+        // Used to be lost: the audio entry replaced the JSON text entry.
+        const model = defineModel('gemini-flash-latest', defaultPluginOptions);
+        mockFetchResponse(defaultApiResponse);
+        await model
+          .run({
+            ...minimalRequest,
+            config: {
+              responseModalities: ['TEXT', 'AUDIO'],
+              audioFormat: { mimeType: 'audio/wav' },
+            },
+            output: {
+              format: 'json',
+              contentType: 'application/json',
+              constrained: true,
+              schema: jsonOutputSchema,
+            },
+          })
+          .catch(() => undefined);
+
+        const apiRequest: CreateInteractionRequest = JSON.parse(
+          fetchStub.lastCall.args[1].body
+        );
+        assert.deepStrictEqual(apiRequest.response_format, [
+          {
+            type: 'text',
+            mime_type: 'application/json',
+            schema: jsonOutputSchema,
+          },
+          { type: 'audio', mime_type: 'audio/wav' },
         ]);
       });
 
@@ -785,6 +864,43 @@ describe('Google AI Gemini', () => {
         assert.ok(String(budgetWarnings[0].args[0]).includes('thinkingLevel'));
       });
 
+      it('drops topK with one warning per model (Interactions API)', async () => {
+        const warnStub = sinon.stub(logger, 'warn');
+        // An unlisted model (routed to Interactions) not used by other tests,
+        // since the warning is only logged once per model and field.
+        const model = defineModel('gemini-top-k-test', defaultPluginOptions);
+        const request = {
+          ...minimalRequest,
+          config: { topK: 40, temperature: 0.5 },
+        };
+        mockFetchResponse(defaultApiResponse);
+        await model.run(request).catch(() => undefined);
+        mockFetchResponse(defaultApiResponse);
+        await model.run(request).catch(() => undefined);
+
+        const apiRequest: CreateInteractionRequest = JSON.parse(
+          fetchStub.lastCall.args[1].body
+        );
+        assert.deepStrictEqual(apiRequest.generation_config, {
+          temperature: 0.5,
+        });
+        const topKWarnings = warnStub
+          .getCalls()
+          .filter((c) => String(c.args[0]).includes('topK'));
+        assert.strictEqual(topKWarnings.length, 1);
+      });
+
+      it('still sends topK to generateContent models', async () => {
+        const model = defineModel('gemini-2.5-flash', defaultPluginOptions);
+        mockFetchResponse(defaultApiResponse);
+        await model.run({ ...minimalRequest, config: { topK: 40 } });
+
+        const apiRequest: GenerateContentRequest = JSON.parse(
+          fetchStub.lastCall.args[1].body
+        );
+        assert.strictEqual(apiRequest.generationConfig?.topK, 40);
+      });
+
       it('handles every config schema field explicitly (Interactions API)', () => {
         // The Interactions API rejects unknown `generation_config` fields with
         // a 400, so every field in the plugin's config schemas must be either
@@ -815,17 +931,19 @@ describe('Google AI Gemini', () => {
           'videoFormat',
           'thinkingConfig',
           'contextCache',
+          // Dropped with a warning (no `top_k` in generation_config).
+          'topK',
           'toolConfig',
           'tools',
+          // Sent as a `response_format` image entry.
+          'imageConfig',
         ];
         // Verified live to be accepted in `generation_config`.
         const acceptedByApi = [
           'temperature',
           'topP',
-          'topK',
           'maxOutputTokens',
           'stopSequences',
-          'imageConfig',
         ];
         // A `generation_config` field in the Omni guide (video models); not
         // yet verified live.
@@ -1276,7 +1394,7 @@ describe('Google AI Gemini', () => {
         assert.strictEqual(apiRequest.response_format, undefined);
       });
 
-      it('sends no response_format without audioFormat (server defaults apply)', async () => {
+      it('asks TTS models for audio without format settings when audioFormat is not set (server defaults apply)', async () => {
         const model = defineModel('gemini-3.8-flash-tts', defaultPluginOptions);
         mockFetchResponse(defaultApiResponse);
         await model.run(minimalRequest).catch(() => undefined);
@@ -1284,7 +1402,7 @@ describe('Google AI Gemini', () => {
         const apiRequest: CreateInteractionRequest = JSON.parse(
           fetchStub.lastCall.args[1].body
         );
-        assert.strictEqual(apiRequest.response_format, undefined);
+        assert.deepStrictEqual(apiRequest.response_format, { type: 'audio' });
       });
 
       it('drops permissive safetySettings on an Interactions model (default behavior)', async () => {
@@ -1395,7 +1513,8 @@ describe('Google AI Gemini', () => {
           assert.deepStrictEqual(body.generation_config?.speech_config, [
             { voice: 'Puck' },
           ]);
-          assert.deepStrictEqual(body.response_modalities, ['audio']);
+          assert.deepStrictEqual(body.response_format, { type: 'audio' });
+          assert.strictEqual(body.response_modalities, undefined);
         });
 
         it('sends multi-speaker turns with speech_metadata annotations', async () => {
@@ -2188,6 +2307,18 @@ describe('Google AI Gemini', () => {
       assert.strictEqual(isVideoModelName('gemini-3.8-flash'), false);
     });
 
+    it('treats gemini-nano-banana-* names as image models, not Gemini models', () => {
+      assert.strictEqual(isImageModelName('gemini-nano-banana-2.1'), true);
+      assert.strictEqual(isImageModelName('gemini-3.1-flash-lite-image'), true);
+      assert.strictEqual(isImageModelName('gemini-3.8-flash'), false);
+      assert.strictEqual(isGeminiModelName('gemini-nano-banana-2.1'), false);
+      // An unlisted Nano Banana name gets the image config schema.
+      assert.strictEqual(
+        model('gemini-nano-banana-9').configSchema,
+        GeminiImageConfigSchema
+      );
+    });
+
     it('returns a ModelReference for an unknown model string', () => {
       const name = 'gemini-42.0-flash';
       const modelRef = model(name);
@@ -2284,7 +2415,11 @@ describe('Google AI Gemini', () => {
       const apiRequest: CreateInteractionRequest = JSON.parse(
         fetchStub.lastCall.args[1].body
       );
-      assert.strictEqual(apiRequest.response_format, undefined);
+      // Only the image model's default outputs: no JSON text entry or schema.
+      assert.deepStrictEqual(apiRequest.response_format, [
+        { type: 'text' },
+        { type: 'image' },
+      ]);
       assert.ok(
         JSON.stringify(apiRequest.input).includes(
           'Output should be in JSON format and conform to the following schema'
