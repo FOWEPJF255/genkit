@@ -18,6 +18,10 @@ name: Formatting Check (Run npm run format locally if this fails)
 
 on: pull_request
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   GITHUB_PULL_REQUEST_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
   GITHUB_PULL_REQUEST_BASE_SHA: ${{ github.event.pull_request.base.sha }}
