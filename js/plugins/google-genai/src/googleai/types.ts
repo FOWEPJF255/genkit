@@ -78,7 +78,10 @@ export interface GoogleAIPluginOptions {
   legacyResponseSchema?: boolean;
   /**
    * Whether to store conversations on the server when using the Interactions API.
-   * Defaults to false (stateless).
+   * Defaults to false (stateless). On generateContent models, it sets whether
+   * the server logs requests for the API key's project; sent only when set
+   * (otherwise the project's logging setting applies). A request's
+   * `config.store` takes precedence.
    */
   store?: boolean;
   /**
