@@ -234,6 +234,7 @@ select = [
   "S",     # flake8-bandit (security)
   "ASYNC", # flake8-async (async best practices)
   "T20",   # flake8-print (no print statements)
+  "TD003", # Require issue links for TODO comments
 ]
 
 [tool.ruff.lint.per-file-ignores]
