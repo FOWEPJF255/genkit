@@ -98,16 +98,18 @@ func toGeminiSchema(originalSchema map[string]any, genkitSchema map[string]any) 
 			}
 			typeVal = "string"
 		case genkitSchema["const"] != nil:
-			value, ok := genkitSchema["const"].(string)
+			_, ok := genkitSchema["const"].(string)
 			if !ok {
 				return nil, status.Errorf(status.ErrInvalidSchema, "schema const without a type must be a string: %#v", genkitSchema["const"])
 			}
 			typeVal = "string"
-			schema.Enum = []string{value}
 		default:
 			// A schema with only annotations leaves the type unconstrained.
 			typeVal = ""
 		}
+	}
+	if value, ok := genkitSchema["const"].(string); ok {
+		schema.Enum = []string{value}
 	}
 
 	// JSON Schema 2020-12 allows "type" to be an array of types, e.g.

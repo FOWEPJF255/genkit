@@ -159,6 +159,11 @@ func TestToGeminiSchema(t *testing.T) {
 			want:         &genai.Schema{Type: genai.TypeString, Enum: []string{"fixed"}},
 		},
 		{
+			name:         "explicit string type retains const",
+			genkitSchema: map[string]any{"type": "string", "const": "fixed"},
+			want:         &genai.Schema{Type: genai.TypeString, Enum: []string{"fixed"}},
+		},
+		{
 			name:         "non-string enum without type is rejected",
 			genkitSchema: map[string]any{"enum": []any{"valid", 42}},
 			wantErr:      true,
