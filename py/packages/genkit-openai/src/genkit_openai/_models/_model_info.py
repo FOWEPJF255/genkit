@@ -19,11 +19,11 @@
 
 from typing import Literal, TypeAlias
 
-from genkit.model import ModelInfo, Supports
+from genkit.model import ModelInfo, ModelSupports
 
 # Supports.output is the caller-facing Genkit output contract; wire modes
 # are selected separately by the OpenAI model adapter.
-MULTIMODAL_MODEL_SUPPORTS = Supports(
+MULTIMODAL_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
@@ -32,7 +32,7 @@ MULTIMODAL_MODEL_SUPPORTS = Supports(
 )
 
 # GPT-4 uses a prompt-only JSON fallback in the plugin.
-GPT_4_MODEL_SUPPORTS = Supports(
+GPT_4_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=False,
     tools=True,
@@ -40,7 +40,7 @@ GPT_4_MODEL_SUPPORTS = Supports(
     output=['json', 'text'],
 )
 
-GPT_35_MODEL_SUPPORTS = Supports(
+GPT_35_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=False,
     tools=True,
@@ -48,7 +48,7 @@ GPT_35_MODEL_SUPPORTS = Supports(
     output=['json', 'text'],
 )
 
-O_SERIES_MODEL_SUPPORTS = Supports(
+O_SERIES_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
@@ -56,7 +56,7 @@ O_SERIES_MODEL_SUPPORTS = Supports(
     output=['json', 'text'],
 )
 
-GPT_5_MODEL_SUPPORTS = Supports(
+GPT_5_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=True,
     tools=True,
@@ -64,7 +64,7 @@ GPT_5_MODEL_SUPPORTS = Supports(
     output=['json', 'text'],
 )
 
-GPT_OSS_MODEL_SUPPORTS = Supports(
+GPT_OSS_MODEL_SUPPORTS = ModelSupports(
     multiturn=True,
     media=False,
     tools=True,
@@ -141,7 +141,7 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     'o3': ModelInfo(label='OpenAI - o3', supports=O_SERIES_MODEL_SUPPORTS),
     'o3-mini': ModelInfo(
         label='OpenAI - o3-mini',
-        supports=Supports(
+        supports=ModelSupports(
             multiturn=True,
             media=False,
             tools=True,
@@ -156,7 +156,7 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     'gpt-5-nano': ModelInfo(label='OpenAI - gpt-5-nano', supports=GPT_5_MODEL_SUPPORTS),
     'gpt-5-chat-latest': ModelInfo(
         label='OpenAI - gpt-5-chat-latest',
-        supports=Supports(
+        supports=ModelSupports(
             multiturn=True,
             media=True,
             tools=False,
@@ -171,7 +171,7 @@ SUPPORTED_OPENAI_MODELS: dict[KnownGpt, ModelInfo] = {
     # Chat Completions rejects function tools for this model.
     'gpt-6-astra': ModelInfo(
         label='OpenAI - gpt-6-astra',
-        supports=Supports(
+        supports=ModelSupports(
             multiturn=True,
             media=True,
             tools=False,
@@ -205,4 +205,4 @@ SUPPORTED_EMBEDDING_MODELS: dict[str, dict] = {
 
 def get_default_openai_model_info(name: str) -> ModelInfo:
     """Gets the default model info given a name."""
-    return ModelInfo(label=f'OpenAI - {name}', supports=Supports(multiturn=True))
+    return ModelInfo(label=f'OpenAI - {name}', supports=ModelSupports(multiturn=True))
