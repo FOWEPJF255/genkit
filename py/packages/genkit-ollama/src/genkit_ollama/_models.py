@@ -94,17 +94,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import ollama as ollama_api
-import structlog
-from pydantic import ConfigDict, ValidationError
-from pydantic.alias_generators import to_camel, to_snake
+from pydantic import ValidationError
+from pydantic.alias_generators import to_snake
 
-from genkit import ActionRunContext, GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role
-from genkit.model import ModelConfig, ModelRequest, ModelUsage, ToolRequest, get_basic_usage_stats
+from genkit import GenkitError, Message, ModelResponse, ModelResponseChunk, Part, Role, get_logger
+from genkit.model import GenerationUsage, ModelConfig, ModelContext, ModelRequest, ToolRequest
 from genkit.plugin_api import loop_local_client, provider_error
 from genkit_ollama._constants import DEFAULT_OLLAMA_SERVER_URL
 from genkit_ollama._errors import wrap_connection_errors
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 # Some image hosts (Wikimedia, for one) answer 403 to requests without a real
@@ -225,8 +224,6 @@ class OllamaConfig(ModelConfig):
     ``options`` as-is, so newer sampler parameters work without an SDK bump.
     """
 
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-
     think: bool | Literal['low', 'medium', 'high'] | None = None
     keep_alive: float | str | None = None
     num_ctx: int | None = None
@@ -293,7 +290,7 @@ class OllamaModel:
     async def generate(
         self,
         request: ModelRequest,
-        ctx: ActionRunContext | None = None,
+        ctx: ModelContext | None = None,
         client: ollama_api.AsyncClient | None = None,
     ) -> ModelResponse:
         """Generate a response from Ollama.
@@ -336,7 +333,7 @@ class OllamaModel:
         self,
         *,
         request: ModelRequest,
-        ctx: ActionRunContext | None,
+        ctx: ModelContext | None,
         client: ollama_api.AsyncClient | None,
         content: list[Part],
     ) -> ModelResponse:
@@ -360,9 +357,9 @@ class OllamaModel:
             content=content,
         )
 
-        basic_generation_usage = get_basic_usage_stats(
-            input_=request.messages,
-            response=response_message,
+        basic_generation_usage = GenerationUsage.from_messages(
+            request.messages,
+            response_message,
         )
 
         return ModelResponse(
@@ -379,7 +376,7 @@ class OllamaModel:
     async def _chat_with_ollama(
         self,
         request: ModelRequest,
-        ctx: ActionRunContext | None = None,
+        ctx: ModelContext | None = None,
         client: ollama_api.AsyncClient | None = None,
     ) -> ollama_api.ChatResponse | None:
         """Chat with Ollama.
@@ -635,8 +632,9 @@ class OllamaModel:
         ``chat`` call — not sampler ``options``. The framework
         dumps a ``BaseModel`` config to a dict before the model fn sees it, so
         this reads them from any :class:`ModelConfig` instance *or* a dumped
-        dict. Both paths snake-case the keys (declared fields can arrive
-        camelCased) and return only the values that are set.
+        dict. Both paths snake-case the keys: a wire dict is camelCase, and
+        undeclared extras on a loose ModelConfig subclass keep the caller's
+        spelling. Only set values are returned.
 
         Args:
             config: The configuration to extract request kwargs from.
@@ -817,27 +815,27 @@ class OllamaModel:
                 raise ValueError(f'Unknown role: {role}')
 
     @staticmethod
-    def is_streaming_request(ctx: ActionRunContext | None) -> bool:
+    def is_streaming_request(ctx: ModelContext | None) -> bool:
         """Determines if streaming mode is requested."""
         return bool(ctx and ctx.is_streaming)
 
     @staticmethod
     def get_usage_info(
-        basic_generation_usage: ModelUsage,
+        basic_generation_usage: GenerationUsage,
         api_response: ollama_api.ChatResponse | None,
-    ) -> ModelUsage:
+    ) -> GenerationUsage:
         """Extracts and calculates token usage information from an Ollama API response.
 
         Updates a basic generation usage object with input, output, and total token counts
         based on the details provided in the Ollama API response.
 
         Args:
-            basic_generation_usage: An existing ModelUsage object to update.
+            basic_generation_usage: An existing GenerationUsage object to update.
             api_response: The response object received from the Ollama API,
                 containing token count details.
 
         Returns:
-            The updated ModelUsage object with token counts populated.
+            The updated GenerationUsage object with token counts populated.
         """
         if api_response:
             basic_generation_usage.input_tokens = api_response.prompt_eval_count or 0
