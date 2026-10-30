@@ -50,23 +50,23 @@ import {
 } from '../common/converters.js';
 import {
   applyLatLngToGoogleMapsTools,
-  fromInteractionDelta,
+  createInteractionChunkConverter,
   fromInteractionSync,
   mergeStreamedAudio,
   selectInteractionInput,
   toInteractionConfigTool,
   toInteractionGenerationConfig,
   toInteractionGoogleSearch,
-  toInteractionResponseModalities,
+  toInteractionResponseFormat,
   toInteractionSafetySettings,
   toInteractionSteps,
   toInteractionTool,
   toInteractionToolChoice,
-  toInteractionVideoResponseFormat,
 } from '../common/interaction-converters.js';
 import {
   CreateInteractionRequest,
   InteractionTool,
+  Step,
 } from '../common/interaction-types.js';
 import { isObject } from '../common/types.js';
 import {
@@ -210,7 +210,8 @@ export const GeminiConfigSchema = GenerationCommonConfigSchema.extend({
     .boolean()
     .describe(
       'Whether to store the interaction for later retrieval. Defaults to ' +
-        'false. Only used by models on the Interactions API.'
+        'false. Only used by models on the Interactions API (on ' +
+        'generateContent models, store: true is ignored with a warning).'
     )
     .optional(),
   previousInteractionId: z
@@ -1067,6 +1068,57 @@ function toVertexAISearchDatastore(
 }
 
 /**
+ * Server-side tool step types that are intentionally NOT sent back in a
+ * stateless history (`input`) on this platform.
+ *
+ * Resending them makes the platform return 501 "Operation is not
+ * implemented, or supported, or enabled" (seen live, Oct 2026, whatever the
+ * step order, arguments or signature), while the Gemini API (googleAI)
+ * accepts the same history. `store: true` conversations work, because the
+ * steps stay on the server. Without them the model loses the earlier tool
+ * results (it may call the tool again). Only step types seen working are
+ * resent; code execution steps are accepted and are not listed here.
+ * Remove an entry once the platform accepts it.
+ */
+const UNSUPPORTED_RESENT_STEP_TYPES: ReadonlySet<string> = new Set([
+  // Rejected with 501 (seen live).
+  'google_search_call',
+  'google_search_result',
+  'url_context_call',
+  'url_context_result',
+  'google_maps_call',
+  'google_maps_result',
+  // Not seen working here (untestable or not available for models).
+  'file_search_call',
+  'file_search_result',
+  'mcp_server_tool_call',
+  'mcp_server_tool_result',
+]);
+
+/** Whether the dropped-steps warning has been logged (once per process). */
+let warnedDroppedResentSteps = false;
+
+/**
+ * Removes the steps listed in `UNSUPPORTED_RESENT_STEP_TYPES`, warning once
+ * when any were removed.
+ */
+function withoutUnsupportedResentSteps(steps: Step[]): Step[] {
+  const kept = steps.filter(
+    (step) => !UNSUPPORTED_RESENT_STEP_TYPES.has(step.type)
+  );
+  if (kept.length < steps.length && !warnedDroppedResentSteps) {
+    warnedDroppedResentSteps = true;
+    logger.warn(
+      'Earlier server-side tool results (e.g. Google Search, URL context, ' +
+        'Google Maps) are not sent back in this conversation history, ' +
+        'because the server rejects them. The model may call those tools ' +
+        'again. Set store: true to keep the full tool history on the server.'
+    );
+  }
+  return kept;
+}
+
+/**
  * Converts the request's tools and tool config fields to Interactions tools.
  */
 function toVertexInteractionTools(
@@ -1156,8 +1208,9 @@ async function generateWithInteractions(params: {
     store: storeFromConfig,
     previousInteractionId: previousInteractionIdFromConfig,
     responseModalities,
-    // Sent as `response_format` below.
+    // Sent as `response_format` entries below.
     videoFormat,
+    imageConfig,
     // TTS models don't use the Interactions API.
     audioFormat,
     ...generationFields
@@ -1220,7 +1273,7 @@ async function generateWithInteractions(params: {
     tools: tools.length ? tools : undefined,
     generation_config: generationConfig,
     stream: params.streamingRequested,
-    input: toInteractionSteps(messages),
+    input: withoutUnsupportedResentSteps(toInteractionSteps(messages)),
     store,
     safety_settings: toInteractionSafetySettings(safetySettings),
     labels: toGeminiLabels(labels),
@@ -1229,27 +1282,31 @@ async function generateWithInteractions(params: {
     req.previous_interaction_id = previousInteractionId;
   }
 
+  // One `response_format` with an entry per output type (the deprecated
+  // `response_modalities` and `generation_config.image_config` aren't sent).
   const jsonMode =
     request.output?.format === 'json' || !!request.output?.schema;
-  if (jsonMode) {
-    req.response_format = { type: 'text', mime_type: 'application/json' };
-    if (request.output?.constrained) {
-      req.response_format.schema = pluginOptions?.legacyResponseSchema
-        ? cleanSchema(request.output.schema)
-        : request.output.schema;
-    }
-  }
-
-  const videoResponseFormat = toInteractionVideoResponseFormat(videoFormat);
-  if (videoResponseFormat) {
-    req.response_format = videoResponseFormat;
-  }
-
-  if (Array.isArray(responseModalities) && isStringArray(responseModalities)) {
-    req.response_modalities =
-      toInteractionResponseModalities(responseModalities);
-  } else if (isImageModelName(modelVersion)) {
-    req.response_modalities = ['text', 'image'];
+  const responseFormat = toInteractionResponseFormat({
+    modalities:
+      Array.isArray(responseModalities) && isStringArray(responseModalities)
+        ? responseModalities
+        : isImageModelName(modelVersion)
+          ? ['TEXT', 'IMAGE']
+          : undefined,
+    imageConfig,
+    videoFormat,
+    json: jsonMode
+      ? {
+          schema: request.output?.constrained
+            ? pluginOptions?.legacyResponseSchema
+              ? cleanSchema(request.output.schema)
+              : request.output.schema
+            : undefined,
+        }
+      : undefined,
+  });
+  if (responseFormat) {
+    req.response_format = responseFormat;
   }
 
   if (!params.streamingRequested) {
@@ -1261,12 +1318,11 @@ async function generateWithInteractions(params: {
     req,
     params.requestClientOptions
   );
+  const toChunkParts = createInteractionChunkConverter();
   for await (const event of result.stream) {
-    if (event.event_type === 'step.delta') {
-      const content = fromInteractionDelta(event.delta);
-      if (content.length > 0) {
-        params.sendChunk({ index: 0, content });
-      }
+    const content = toChunkParts(event);
+    if (content.length > 0) {
+      params.sendChunk({ index: 0, content });
     }
   }
   return fromInteractionSync(await result.response);
@@ -1392,11 +1448,16 @@ export function defineModel(
         });
       }
 
-      // `store: false` is already how this model behaves, so only warn when
-      // something would actually be ignored.
-      if (storeFromConfig === true || previousInteractionIdFromConfig) {
+      // The platform's generateContent has no `store` field and never stores
+      // anything for later retrieval, so only `store: true` (request config
+      // or plugin options) asks for something that can't happen.
+      if ((storeFromConfig ?? pluginOptions?.store) === true) {
+        warnDroppedConfigField(modelVersion, 'store');
+      }
+      // There's no stored conversation to continue on generateContent.
+      if (previousInteractionIdFromConfig) {
         logger.warn(
-          'store and previousInteractionId are not supported for this model and will be ignored.'
+          'previousInteractionId is not supported for this model and will be ignored.'
         );
       }
       if (videoFormatFromConfig !== undefined) {
@@ -1583,4 +1644,7 @@ export const TEST_ONLY = {
   HIDDEN_MODELS,
   ALL_MODELS,
   KNOWN_MODELS,
+  resetDroppedResentStepsWarning: () => {
+    warnedDroppedResentSteps = false;
+  },
 };

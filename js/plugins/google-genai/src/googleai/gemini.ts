@@ -46,19 +46,17 @@ import {
 } from '../common/converters.js';
 import {
   applyLatLngToGoogleMapsTools,
-  fromInteractionDelta,
+  createInteractionChunkConverter,
   fromInteractionSync,
   mergeStreamedAudio,
   removeId3FromAudio,
   selectInteractionInput,
-  toInteractionAudioResponseFormat,
   toInteractionConfigTool,
   toInteractionGenerationConfig,
-  toInteractionResponseModalities,
+  toInteractionResponseFormat,
   toInteractionSteps,
   toInteractionTool,
   toInteractionToolChoice,
-  toInteractionVideoResponseFormat,
 } from '../common/interaction-converters.js';
 import {
   InteractionTool,
@@ -334,7 +332,10 @@ export const GeminiConfigSchema = GenerationCommonConfigSchema.extend({
   store: z
     .boolean()
     .describe(
-      'Whether to store the interaction for later retrieval. Defaults to false.'
+      'Interactions API models: whether to store the interaction for later ' +
+        'retrieval (defaults to false). generateContent models: whether ' +
+        "the server logs the request for the API key's project; sent only " +
+        "when set (otherwise the project's logging setting applies)."
     )
     .optional(),
   thinkingConfig: z
@@ -749,9 +750,15 @@ const KNOWN_IMAGE_MODELS = {
   ),
 } as const;
 export type KnownImageModels = keyof typeof KNOWN_IMAGE_MODELS;
-export type ImageModelName = `gemini-${string}-image${string}`;
+export type ImageModelName =
+  | `gemini-${string}-image${string}`
+  | `gemini-nano-banana-${string}`;
+/** Image models: `-image` names and the Nano Banana names (as in vertexAI). */
 export function isImageModelName(value: string): value is ImageModelName {
-  return value.startsWith('gemini-') && value.includes('-image');
+  return (
+    value.startsWith('gemini-') &&
+    (value.includes('-image') || value.startsWith('gemini-nano-banana-'))
+  );
 }
 
 const KNOWN_VIDEO_MODELS = {
@@ -1398,40 +1405,36 @@ export function defineModel(
           store,
         };
 
-        if (jsonMode) {
-          req.response_format = {
-            type: 'text',
-            mime_type: 'application/json',
-          };
-          if (request.output?.constrained) {
-            req.response_format.schema = pluginOptions?.legacyResponseSchema
-              ? cleanSchema(request.output.schema)
-              : request.output.schema;
-          }
-        }
-
-        const audioResponseFormat = toInteractionAudioResponseFormat(
-          audioFormatFromConfig
-        );
-        if (audioResponseFormat) {
-          req.response_format = audioResponseFormat;
-        }
-
-        const videoResponseFormat = toInteractionVideoResponseFormat(
-          videoFormatFromConfig
-        );
-        if (videoResponseFormat) {
-          req.response_format = videoResponseFormat;
-        }
-
-        if (responseModalitiesFromConfig) {
-          req.response_modalities = toInteractionResponseModalities(
-            responseModalitiesFromConfig
-          );
-        } else if (isTTSModelName(modelVersion)) {
-          req.response_modalities = ['audio'];
-        } else if (isImageModelName(modelVersion)) {
-          req.response_modalities = ['text', 'image'];
+        // One `response_format` with an entry per output type (the
+        // deprecated `response_modalities` and `generation_config
+        // .image_config` aren't sent). TTS and image models ask for the same
+        // outputs as before by default.
+        const responseFormat = toInteractionResponseFormat({
+          modalities:
+            responseModalitiesFromConfig ??
+            (isTTSModelName(modelVersion)
+              ? ['AUDIO']
+              : isImageModelName(modelVersion)
+                ? ['TEXT', 'IMAGE']
+                : undefined),
+          imageConfig:
+            'imageConfig' in requestOptions
+              ? requestOptions.imageConfig
+              : undefined,
+          audioFormat: audioFormatFromConfig,
+          videoFormat: videoFormatFromConfig,
+          json: jsonMode
+            ? {
+                schema: request.output?.constrained
+                  ? pluginOptions?.legacyResponseSchema
+                    ? cleanSchema(request.output.schema)
+                    : request.output.schema
+                  : undefined,
+              }
+            : undefined,
+        });
+        if (responseFormat) {
+          req.response_format = responseFormat;
         }
 
         if (
@@ -1454,17 +1457,14 @@ export function defineModel(
             req,
             clientOpt
           );
+          const toChunkParts = createInteractionChunkConverter();
           for await (const event of result.stream) {
-            if (event.event_type === 'step.delta') {
-              const chunkParts = fromInteractionDelta(event.delta).map(
-                removeId3FromAudio
-              );
-              if (chunkParts.length > 0) {
-                sendChunk({
-                  index: 0,
-                  content: chunkParts,
-                });
-              }
+            const chunkParts = toChunkParts(event).map(removeId3FromAudio);
+            if (chunkParts.length > 0) {
+              sendChunk({
+                index: 0,
+                content: chunkParts,
+              });
             }
           }
           const response = await result.response;
@@ -1481,13 +1481,18 @@ export function defineModel(
         }
       }
 
-      // `store: false` is already how this model behaves, so only warn when
-      // something would actually be ignored.
-      if (storeFromConfig === true || previousInteractionIdFromConfig) {
+      // There's no stored conversation to continue on generateContent.
+      if (previousInteractionIdFromConfig) {
         logger.warn(
-          'store and previousInteractionId are not supported for this model and will be ignored.'
+          'previousInteractionId is not supported for this model and will be ignored.'
         );
       }
+
+      // On generateContent, `store` only controls whether the server logs
+      // this request for the API key's project (viewable in AI Studio's Logs
+      // and Datasets); there's nothing to continue. Sent only when set;
+      // otherwise the project's logging setting applies.
+      const generateContentStore = storeFromConfig ?? pluginOptions?.store;
 
       let generateContentRequest: GenerateContentRequest = {
         systemInstruction,
@@ -1499,6 +1504,7 @@ export function defineModel(
         ) as SafetySetting[],
         contents: messages.map((message) => toGeminiMessage(message, ref)),
         serviceTier,
+        store: generateContentStore,
       };
 
       let response: GenerateContentResponse;

@@ -25,8 +25,8 @@ import pytest
 from genkit_openai._models._model import OpenAIModel
 from openai.types.chat import ChatCompletion
 
-from genkit import ActionRunContext, Genkit, Message, ModelResponse, ModelResponseChunk, Part, Role
-from genkit.model import ModelRequest, ToolDefinition, ToolRequest
+from genkit import Genkit, Message, ModelResponse, ModelResponseChunk, Part, Role
+from genkit.model import ModelContext, ModelRequest, ToolDefinition, ToolRequest
 
 
 @pytest.mark.asyncio
@@ -154,7 +154,7 @@ async def test_string_tool_reaches_genkit_dispatch(make_completion: Callable[...
     client.chat.completions.create = AsyncMock(side_effect=[first, second])
     model = OpenAIModel(model='gpt-4', client=client)
 
-    async def model_fn(request: ModelRequest, _ctx: ActionRunContext) -> ModelResponse:
+    async def model_fn(request: ModelRequest, _ctx: ModelContext) -> ModelResponse:
         return await model._generate(request)
 
     ai.define_model(name='openai-mock', fn=model_fn)
